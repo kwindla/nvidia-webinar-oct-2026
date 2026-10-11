@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+models/
+datasets/
+artifacts/
+.tools/
+vendor/
+
+.playwright-mcp/
+
+# React client
+client/node_modules/
+client/dist/
+*.tsbuildinfo
+
+# Generated browser noise tracks
+client/public/noise/
+
+# Working docs stay local; only the contracts the pipeline reads are tracked
+docs/*
+!docs/atc-tutor-contract-v13.md
+!docs/atc-tutor-target-contract.md
+!docs/atc-tutor-eval-contract.md
