@@ -21,9 +21,11 @@ Includes a custom browser voice bot, the built-in dev console, and a synthetic-a
 | Turn detection | **Silero VAD + Smart Turn v3**, interruption support and shared conversation context |
 
 ```text
-Browser microphone → SmallWebRTC input → Nemotron streaming STT
-  → User context aggregator (Silero VAD + Smart Turn v3)
-  → LLM switcher (GPT-5.6 Terra / gb-phone) → Deepgram Flux TTS → SmallWebRTC output → Browser speaker
+Browser microphone → SmallWebRTC input → audio, in parallel to:
+    Nemotron streaming STT (passes audio through without waiting for transcripts)
+    Silero VAD + Smart Turn v3 (inside the user context aggregator; VAD stop also commits STT)
+  → User context aggregator ends the turn once Smart Turn says done and the final transcript is in
+  → LLM switcher (GPT-5.6 Terra / gb-phone / tuned ATC tutor) → Deepgram Flux TTS → SmallWebRTC output → Browser speaker
   → Assistant context aggregator
 
 Same input PCM + commit boundaries → baseline ASR worker (:8082)
@@ -201,14 +203,18 @@ segments and typed messages remain in regular type.
 **Disconnect** ends the session; reconnect starts a fresh conversation.
 Use headphones to avoid echo.
 
-After connecting, use **Response model → Cloud / Local** at any point.
-The server confirms the selection; it applies to the **next response** while
-any current reply finishes. Both models share conversation history and the
-same system instruction, ASR, turn detection, and TTS. A new session defaults
-to Cloud. Switching back to Cloud sends the accumulated conversation—including
-turns handled locally—to OpenAI. Requests stay server-side; port 8080 is not
-exposed through ngrok. An unavailable model produces an error; there is no
-automatic fallback to the other provider.
+**Response model** lists the models the bot offers, from `GET /models` (Cloud always,
+Local when :8080 answers, Tuned when `TUNED_LLM_URL` is set; names come from the bot,
+and `TUNED_LLM_NAME`/`LOCAL_LLM_NAME` override them). Before connecting, a pick sets the
+model the session starts on (sent as the `/start` body); otherwise sessions start on
+`DEFAULT_LLM` (default `cloud`). If the picked model is no longer offered when the session
+starts, the session starts on `DEFAULT_LLM` (or Cloud) instead, and the selector shows the
+actual model once connected. After connecting, switching is confirmed by the server and
+applies to the **next response** while any current reply finishes. All models share
+conversation history, ASR, turn detection, and TTS. Switching to Cloud sends the
+accumulated conversation—including turns handled locally—to OpenAI. Requests stay
+server-side; model servers are not exposed through ngrok. Mid-session, an unavailable model
+produces an error; there is no automatic fallback to the other provider.
 
 `llm_switcher.py` wraps Pipecat's `LLMSwitcher`, choosing the service at each
 context frame. It includes a Pipecat 1.12 workaround that deduplicates flush
@@ -307,6 +313,14 @@ Vite allows `*.ngrok.app`; add an explicit hostname in `client/vite.config.ts`
 if using a different tunnel domain. Preview is for this local demo, not a
 production hosting configuration.
 
+A second UI can front a second bot (such as the fully local copy on :7871) by setting
+the proxy target and port:
+
+```bash
+BOT_URL=http://127.0.0.1:7871 CLIENT_PORT=5174 npm --prefix client run preview
+ngrok http http://127.0.0.1:5174
+```
+
 Validated through the custom HTTPS UI: synthetic microphone audio → Nemotron
 transcript → Smart Turn → GPT-6 Luna → PocketTTS audio (before the Flux switch) received over WebRTC;
 typed messages, disconnect/reconnect, microphone denial, and responsive layout.
@@ -358,36 +372,54 @@ Target contract: [docs/atc-tutor-target-contract.md](docs/atc-tutor-target-contr
 The evaluator is frozen at [docs/atc-tutor-eval-contract.md](docs/atc-tutor-eval-contract.md).
 Training uses the PhoneLLM Modal recipe in `../zorana-research-internal`.
 
-### Current demo state (handoff 2026-10-10 ~03:00)
+### Current demo state (2026-10-11 evening)
 
 **Running locally:**
-- bot on :7860;
-- React client dev server on :5173 (through an ngrok tunnel);
-- fine-tuned ASR on :8081 (GPU);
-- base ASR on :8082 (CPU).
+- fine-tuned ASR on :8081 and the round-5 NVFP4 tutor on :8083 (both on the GPU);
+- base ASR on :8082 (CPU);
+- bot on :7871 (7861 is used by another project), behind the React UI on :5174
+  (`vite preview` with `BOT_URL`), tunneled by ngrok.
 
-**Stopped:** the local vLLM `gb-phone` (:8080), freed to give the GPU to the ASR. The
-bot now offers **Local** only when that server answers; restart it with
-`~/local-models/serve-mini-nvfp4.sh start` only if GPU memory allows.
+**Stopped:** the earlier :7860 bot and :5173 UI, and the local Mini vLLM `gb-phone`
+(:8080), which does not fit beside the tutor; the bot offers **Local** only when it answers.
 
-**Tuned model:**
-- **Tuned** = the v1.3 round-2 candidate `atc-tutor-v13ar-s2-sft/hf-iter486`, served by
-  `atc-tutor-serving-v13` (`TUNED_LLM_URL=https://daily-gb-rl--atc-tutor-serving-v13-phone.modal.run/v1`,
-  `TUNED_PROMPT=v13`). Development-scored only, in rehearsal.
-- The final-tested v2-328 remains at
-  `https://daily-gb-rl--atc-tutor-serving-phone.modal.run/v1` with `TUNED_PROMPT=v2`.
-- v3-324 is an exploratory alternative at
-  `https://daily-gb-rl--atc-tutor-serving-v3-phone.modal.run/v1`. To use it, change
-  `TUNED_LLM_URL` and restart the bot, and label it "not final-tested".
-- DPO checkpoints are not used in the demo.
+**Tuned model:** the round-5 NVFP4 build served locally (see below; `.env`
+`TUNED_LLM_URL=http://127.0.0.1:8083/v1`, `TUNED_PROMPT=v13`). Earlier candidates remain
+on Modal, scaled to zero: round 2 `atc-tutor-v13ar-s2-sft/hf-iter486` at
+`https://daily-gb-rl--atc-tutor-serving-v13-phone.modal.run/v1` (`TUNED_PROMPT=v13`), and
+the final-tested v2-328 at `https://daily-gb-rl--atc-tutor-serving-phone.modal.run/v1`
+(`TUNED_PROMPT=v2`). DPO checkpoints are not used in the demo.
 
-**Before a session:**
-1. Restart the bot within 24 hours of the session (Cloudflare TURN credentials expire),
-   and warm the tuned endpoint (probe below). Cold starts take 60–400 s.
-2. Connect.
-3. Click **Tuned** and confirm the selection before speaking. Sessions start on
-   `DEFAULT_LLM`, which defaults to `cloud`; set `DEFAULT_LLM=tuned` in `.env` to
-   start on the fine-tune.
+**Before a session:** restart the bot within 24 hours (Cloudflare TURN credentials
+expire). Pick **Tuned** before connecting, or switch after the Cloud greeting; the tutor
+greets oddly with an empty conversation, so starting on Cloud reads better.
+
+### Fully local tuned model (RTX 5090 / Blackwell)
+
+The round-5 NVFP4 build fits next to the fine-tuned ASR on one 32 GB GPU (19 GB weights,
+`GPU_MEM_UTIL=0.80` by default). Download it (needs a token with read access to the
+private repo) and serve it with vLLM 0.31.0 in Docker on :8083:
+
+```bash
+read -rsp 'Hugging Face token: ' HF_TOKEN; echo; export HF_TOKEN
+uvx --from huggingface_hub hf download daily-co/atc-tutor-nano-r5-nvfp4 \
+  --local-dir ~/local-models/atc-tutor-r5-nvfp4
+unset HF_TOKEN
+./scripts/serve_asr.sh            # terminal 1, unless already running
+./scripts/serve_tutor_nvfp4.sh    # terminal 2; ready when curl -f http://127.0.0.1:8083/health succeeds
+```
+
+Point the bot's **Tuned** arm at it in `.env` (Pipecat's runner reloads `.env` with
+override, so shell variables do not work): `TUNED_LLM_URL=http://127.0.0.1:8083/v1`,
+`TUNED_PROMPT=v13`; `TUNED_LLM_API_KEY` may be any value. Then start the bot:
+
+```bash
+uv run bot.py -t webrtc --host 127.0.0.1 --port 7871
+```
+
+Open `http://localhost:7871/client/`, or the custom UI through ngrok (see Custom React UI:
+`BOT_URL`/`CLIENT_PORT`). ASR, the tutor LLM, VAD and turn detection run
+locally; Deepgram TTS, the Jev judge, the **Cloud** arm and TURN still use the network.
 
 ### Use the tuned model in the voice demo
 
@@ -511,10 +543,49 @@ uv run python noisy13.py targets --source noisy && uv run python noisy13.py targ
 uv run python noisy13.py meta
 uv run python export13.py --label atc-tutor-v13r3 --arm A --round3
 uv run python noisy13.py score --arm NAME:short13 --url https://<serving app>.modal.run
+# round 4: chat-vs-radio contrast pairs (round 5 retrains this corpus to 831 updates)
+uv run python noisy13.py contrast
+uv run python export13.py --label atc-tutor-v13r4 --arm A --round4
 ```
 
 Training uses the same Modal commands as above with the v1.3 labels; the run
-parameters are in the plan's v1.3 declaration.
+parameters are in the plan's v1.3 declaration. Round 5 is `train_full --data-label
+atc-tutor-v13r4-s2-nemo --epochs 1.5471 --save-interval 311` (831 updates).
+
+### Quantized builds (NVFP4 and FP8)
+
+NVFP4 needs Blackwell GPUs (B200, RTX PRO 6000, RTX 50-series); FP8 runs on Hopper and
+Ada (H100, H200, L40S). Both use the PhoneLLM Mini recipe: NVIDIA's Mamba-MoE ModelOpt
+preset and BF16 layer policy, 1,000 calibration prefills from the training rows, and
+normalization to NVIDIA's published Nano checkpoint layout. From the PhoneLLM checkout
+(branch `atc-tutor-dpo`):
+
+```bash
+llm-rl/.venv/bin/modal run --detach -e gb-rl llm-rl/llm_rl/modal/atc_nvfp4_app.py \
+  --run atc-tutor-v13r5-nvfp4-a --source atc-tutor-v13r5-s2-sft/hf-iter831 \
+  --calibration atc-tutor-v13r4-s2-nemo/training.jsonl          # add --fmt fp8 for FP8
+# serve on vLLM 0.31 (BF16 KV cache); GB_PHONE_GPU=H100 for FP8 on Hopper
+GB_PHONE_APP_NAME=atc-tutor-bench13q-serving GB_PHONE_FAMILY=nano \
+  GB_PHONE_IMAGE=vllm/vllm-openai:v0.31.0 GB_PHONE_GPU=RTX-PRO-6000 \
+  GB_PHONE_EXTRA_VLLM_ARGS='["--kv-cache-dtype","bfloat16"]' \
+  GB_PHONE_LADDER=/data/checkpoints/atc-tutor-v13r5-s2-sft/nvfp4-atc-tutor-v13r5-nvfp4-a \
+  llm-rl/.venv/bin/modal deploy -e gb-rl llm-rl/llm_rl/modal/phone_serving_app.py
+```
+
+Results against BF16 on the same stack are in the plan's quantization section: FP8 passes
+on RTX PRO 6000 and H100; NVFP4 is 2.6 points lower on dev.
+
+### Hugging Face release (private)
+
+Round 5 is published from Modal (secret `hf-write-token`) to private repos
+`daily-co/atc-tutor-nano-r5-{bf16,fp8,nvfp4}`, each with a model card giving the system
+prompt and vLLM usage. Partner read tokens are fine-grained: add each repo to the token
+(Hub → Settings → Access Tokens → Repositories permissions → read) before sharing.
+
+```bash
+# from the PhoneLLM checkout's llm-rl/ (branch atc-tutor-dpo); --dry-run prints the card
+uv run modal run -e gb-rl -m llm_rl.modal.atc_hf_publish_app --fmt bf16   # or fp8, nvfp4
+```
 
 ### Optional DPO stage (exploratory)
 

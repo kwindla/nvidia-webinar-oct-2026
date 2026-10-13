@@ -7,13 +7,27 @@ import { useMetrics } from "@/stores/metrics"
 export type ModelChoice = "cloud" | "local" | "tuned"
 const modelChoices: readonly ModelChoice[] = ["cloud", "local", "tuned"]
 let sessionGeneration = 0
+// Only the newest /models request may update the store or clear its busy flag.
+let catalogRequest = 0
 
 const isModelChoice = (value: unknown): value is ModelChoice =>
   modelChoices.includes(value as ModelChoice)
 
+type ModelNames = Partial<Record<ModelChoice, string>>
+
+function namesFrom(value: unknown): ModelNames {
+  if (typeof value !== "object" || value === null) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([key, name]) => isModelChoice(key) && typeof name === "string"
+    )
+  )
+}
+
 function modelFromResponse(response: unknown): {
   model: ModelChoice
   available: ModelChoice[]
+  names: ModelNames
 } {
   if (
     typeof response === "object" &&
@@ -27,10 +41,45 @@ function modelFromResponse(response: unknown): {
         : []
     return {
       model: response.model,
-      available: listed.length ? listed : ["cloud", "local"],
+      available: listed.length ? listed : [response.model],
+      names: "names" in response ? namesFrom(response.names) : {},
     }
   }
   throw new Error("The server returned an invalid model selection.")
+}
+
+// GET /models lists what the next session can start on, before connecting.
+function catalogFromResponse(response: unknown): {
+  model: ModelChoice
+  available: ModelChoice[]
+  names: ModelNames
+} {
+  if (
+    typeof response === "object" &&
+    response !== null &&
+    "models" in response &&
+    Array.isArray(response.models)
+  ) {
+    const entries = response.models.filter(
+      (m): m is { id: ModelChoice; name: string } =>
+        typeof m === "object" &&
+        m !== null &&
+        isModelChoice(m.id) &&
+        typeof m.name === "string"
+    )
+    const available = entries.map((m) => m.id)
+    const preferred = "default" in response ? response.default : undefined
+    if (available.length)
+      return {
+        model:
+          isModelChoice(preferred) && available.includes(preferred)
+            ? preferred
+            : available[0],
+        available,
+        names: Object.fromEntries(entries.map((m) => [m.id, m.name])),
+      }
+  }
+  throw new Error("The server returned an invalid model list.")
 }
 
 interface SessionState {
@@ -39,8 +88,11 @@ interface SessionState {
   speaking: boolean
   model: ModelChoice
   availableModels: ModelChoice[]
+  modelNames: ModelNames
+  modelPicked: boolean
   modelBusy: boolean
   modelError: string | null
+  loadModels: () => Promise<void>
   selectModel: (model: ModelChoice) => Promise<void>
   syncModel: () => Promise<void>
   connect: () => Promise<void>
@@ -54,18 +106,54 @@ export const useSession = create<SessionState>((set, get) => ({
   error: null,
   speaking: false,
   model: "cloud",
-  availableModels: ["cloud", "local"],
+  availableModels: [],
+  modelNames: {},
+  modelPicked: false,
   modelBusy: true,
   modelError: null,
+  loadModels: async () => {
+    if (client.state === "ready") return
+    const generation = sessionGeneration
+    const request = ++catalogRequest
+    const current = () =>
+      generation === sessionGeneration && request === catalogRequest
+    set({ modelBusy: true, modelError: null })
+    try {
+      const response = await fetch("/models", { cache: "no-store" })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const { model, available, names } = catalogFromResponse(
+        await response.json()
+      )
+      if (current()) {
+        const kept = get().model
+        set({
+          // Keep a choice the user already made if it is still offered.
+          model: get().modelPicked && available.includes(kept) ? kept : model,
+          availableModels: available,
+          modelNames: names,
+        })
+      }
+    } catch {
+      if (current())
+        set({ modelError: "Could not load the model list. Reload to retry." })
+    } finally {
+      if (current()) set({ modelBusy: false })
+    }
+  },
   syncModel: async () => {
     const generation = sessionGeneration
     set({ modelBusy: true })
     try {
-      const { model, available } = modelFromResponse(
+      const { model, available, names } = modelFromResponse(
         await client.sendClientRequest("get-model", {}, 10000)
       )
       if (generation === sessionGeneration)
-        set({ model, availableModels: available, modelError: null })
+        set({
+          model,
+          availableModels: available,
+          modelNames: names,
+          modelError: null,
+        })
     } catch {
       if (generation === sessionGeneration)
         set({
@@ -77,7 +165,13 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
   selectModel: async (model) => {
-    if (client.state !== "ready" || get().modelBusy) return
+    if (get().modelBusy || !get().availableModels.includes(model)) return
+    if (client.state !== "ready") {
+      // Before connecting, the choice is sent with the session start.
+      if (["disconnected", "initialized", "error"].includes(client.state))
+        set({ model, modelPicked: true })
+      return
+    }
     const generation = sessionGeneration
     set({ modelBusy: true, modelError: null })
     try {
@@ -103,18 +197,18 @@ export const useSession = create<SessionState>((set, get) => ({
     sessionGeneration++
     useMetrics.getState().reset()
     useComparison.getState().reset()
-    set({
-      busy: true,
-      error: null,
-      model: "cloud",
-      modelBusy: true,
-      modelError: null,
-    })
+    // Send a model only when the user picked one; otherwise the bot's DEFAULT_LLM applies.
+    const { model, modelPicked } = get()
+    set({ busy: true, error: null, modelBusy: true, modelError: null })
     try {
       if (client.needsInit()) await client.initDevices()
       const response = await client.startBot({
         endpoint: "/start",
-        requestData: { transport: "webrtc", enableDefaultIceServers: true },
+        requestData: {
+          transport: "webrtc",
+          enableDefaultIceServers: true,
+          body: modelPicked ? { model } : {},
+        },
       })
       await client.connect(response)
     } catch (error) {
@@ -125,6 +219,7 @@ export const useSession = create<SessionState>((set, get) => ({
             : "Could not connect. Please try again.",
       })
       await client.disconnect().catch(() => {})
+      void get().loadModels()
     } finally {
       set({ busy: false })
     }
@@ -167,7 +262,9 @@ export const client = new PipecatClient({
     onDisconnected: () => {
       useComparison.getState().freeze()
       sessionGeneration++
-      useSession.setState({ speaking: false, modelBusy: true })
+      useSession.setState({ speaking: false })
+      // Refresh what the next session can start on.
+      void useSession.getState().loadModels()
     },
     onError: () =>
       useSession.setState({
@@ -175,6 +272,8 @@ export const client = new PipecatClient({
       }),
   },
 })
+
+void useSession.getState().loadModels()
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

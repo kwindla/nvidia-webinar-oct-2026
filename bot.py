@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiohttp
 from dotenv import load_dotenv
@@ -36,6 +37,37 @@ from streaming_stt import NemoSpeechCppSTTService
 from tutor_prompts import FULL_PROMPT, SHORT13_PROMPT, TUTOR_PROMPT
 
 load_dotenv(Path(__file__).with_name(".env"))
+
+CLOUD_NAME = "GPT-5.6 Terra"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+async def model_names(session: aiohttp.ClientSession) -> dict[str, str]:
+    """The response models this bot can offer right now, mapped to display names."""
+    names = {"cloud": CLOUD_NAME}
+    local_url = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080/v1")
+    try:
+        # Offer the local model only when its server answers, so the UI never
+        # shows a choice that would fail mid-conversation.
+        async with session.get(f"{local_url}/models", timeout=aiohttp.ClientTimeout(total=2)) as response:
+            if response.status == 200:
+                names["local"] = os.getenv("LOCAL_LLM_NAME", "gb-phone")
+    except (aiohttp.ClientError, TimeoutError):
+        logger.warning("Local LLM at {} is not reachable; hiding the Local choice", local_url)
+    if tuned_url := os.getenv("TUNED_LLM_URL"):
+        where = "local" if urlparse(tuned_url).hostname in LOOPBACK_HOSTS else "remote"
+        names["tuned"] = os.getenv("TUNED_LLM_NAME", f"ATC tutor · {where}")
+    return names
+
+
+def default_model(names: dict[str, str], requested: object = None) -> str:
+    """The session's starting model: the client's pick, else DEFAULT_LLM, else cloud."""
+    for choice in (requested, os.getenv("DEFAULT_LLM", "cloud")):
+        if isinstance(choice, str) and choice in names:
+            return choice
+    return "cloud"
+
+
 async def bot(runner_args: RunnerArguments):
     if not isinstance(runner_args, SmallWebRTCRunnerArguments):
         raise TypeError("Run this demo with -t webrtc")
@@ -72,19 +104,12 @@ async def bot(runner_args: RunnerArguments):
                 max_completion_tokens=4096,
             ),
         )
+        names = await model_names(session)
         llms = {"cloud": cloud_llm}
-        local_url = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080/v1")
-        try:
-            # Offer the local model only when its server answers, so the UI never
-            # shows a choice that would fail mid-conversation.
-            async with session.get(f"{local_url}/models", timeout=aiohttp.ClientTimeout(total=2)) as response:
-                local_ready = response.status == 200
-        except (aiohttp.ClientError, TimeoutError):
-            local_ready = False
-        if local_ready:
-            local_llm = OpenAILLMService(
+        if "local" in names:
+            llms["local"] = OpenAILLMService(
                 name="local-llm",
-                base_url=local_url,
+                base_url=os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080/v1"),
                 # The SDK requires a value; the local server requires no credential.
                 api_key="not-required",
                 settings=OpenAILLMService.Settings(
@@ -93,12 +118,8 @@ async def bot(runner_args: RunnerArguments):
                     max_completion_tokens=250,
                 ),
             )
-            llms["local"] = local_llm
-        else:
-            logger.warning("Local LLM at {} is not reachable; hiding the Local choice", local_url)
-        tuned_url = os.getenv("TUNED_LLM_URL")
-        if tuned_url:
-            # The ATC tutor fine-tune (BF16 on Modal) with the short prompt it was trained on:
+        if tuned_url := os.getenv("TUNED_LLM_URL"):
+            # The ATC tutor fine-tune (local vLLM or Modal) with the short prompt it was trained on:
             # v1.3 models use the v1.3 prompt, v2/v3 the original one.
             tuned_prompt = SHORT13_PROMPT if os.getenv("TUNED_PROMPT", "v2") == "v13" else TUTOR_PROMPT
             llms["tuned"] = OpenAILLMService(
@@ -113,7 +134,8 @@ async def bot(runner_args: RunnerArguments):
                     extra={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
                 ),
             )
-        llm = ConversationLLMSwitcher(llms, selected=os.getenv("DEFAULT_LLM", "cloud"))
+        body = runner_args.body if isinstance(runner_args.body, dict) else {}
+        llm = ConversationLLMSwitcher(llms, selected=default_model(names, body.get("model")))
         tts = DemoFluxTTSService(
             name="deepgram-flux-tts",
             api_key=deepgram_key,
@@ -177,7 +199,7 @@ async def bot(runner_args: RunnerArguments):
             elif message.type != "get-model":
                 return
             await rtvi.send_server_response(
-                message, {"model": llm.selected, "available": list(llm.models)}
+                message, {"model": llm.selected, "available": list(llm.models), "names": names}
             )
 
         @transport.event_handler("on_client_connected")
@@ -205,7 +227,17 @@ async def bot(runner_args: RunnerArguments):
 
 
 if __name__ == "__main__":
-    from pipecat.runner.run import main
+    from pipecat.runner.run import app, main
+
+    @app.get("/models")
+    async def models():
+        """Models the next session can start on, so the UI can offer them before connecting."""
+        async with aiohttp.ClientSession() as session:
+            names = await model_names(session)
+        return {
+            "models": [{"id": key, "name": name} for key, name in names.items()],
+            "default": default_model(names),
+        }
 
     from cloudflare_turn import configure_runner_ice
 
