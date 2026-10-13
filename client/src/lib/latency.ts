@@ -1,5 +1,7 @@
 export const WINDOW_SIZE = 30
-export type TimingKind = "ttfb" | "ttfs" | "ttft" | "ttfa"
+/** Samples printed as numbers in each row, newest last. */
+export const RECENT_COUNT = 5
+export type TimingKind = "ttfb" | "ttfs" | "ttft"
 export interface LatencySeries {
   processor: string
   model?: string
@@ -13,7 +15,7 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-/** Consume measured headline values only; nested TTFB breakdowns are duplicates. */
+/** Consume measured headline values only; nested TTFB breakdowns are duplicates. TTS TTFA is not shown. */
 export function appendLatency(
   history: LatencyHistory,
   payload: unknown
@@ -22,7 +24,6 @@ export function appendLatency(
   let next = history
   for (const [source, field] of Object.entries({
     ttfb: "value",
-    ttfa: "ttfa",
     ttfat: "ttfat",
     ttfs: "value",
     ttft: "value",
@@ -64,6 +65,17 @@ export function appendLatency(
     }
   }
   return next
+}
+
+/**
+ * The one metric shown per service: LLM TTFT (not its TTFB), ASR TTFS, else TTFB
+ * (e.g. TTS). Returns undefined while a service has no reports.
+ */
+export function headline(items: LatencySeries[]): LatencySeries | undefined {
+  for (const kind of ["ttft", "ttfs", "ttfb"] as const) {
+    const found = items.find((s) => s.kind === kind)
+    if (found) return found
+  }
 }
 
 /** One zero-based vertical scale across every chart, rounded to 1/2/5 steps. */

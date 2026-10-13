@@ -45,6 +45,7 @@ class NemoSpeechCppSTTService(STTService):
         self.last_response = None
         self.partial_count = 0
         self._partial_text = ""
+        self._vad_stop_secs = 0.0
 
     def _compare(self, method, *args):
         """Auxiliary hooks must never prevent primary audio, commits, or transcripts."""
@@ -63,6 +64,14 @@ class NemoSpeechCppSTTService(STTService):
 
     def can_generate_metrics(self):
         return True
+
+    async def start_ttfb_metrics(self, *, start_time=None):
+        # Pipecat starts STT TTFB at the estimated speech end (VAD stop - stop_secs).
+        # This server finalizes only on the VAD-stop commit, so measure from the commit:
+        # TTFB is then ASR finalization latency, without the VAD silence wait.
+        if start_time is not None:
+            start_time += self._vad_stop_secs
+        await super().start_ttfb_metrics(start_time=start_time)
 
     async def start(self, frame):
         await super().start(frame)
@@ -156,6 +165,7 @@ class NemoSpeechCppSTTService(STTService):
         if isinstance(frame, VADUserStartedSpeakingFrame) and self.comparison:
             self._compare("speech_started", frame.timestamp)
         if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._vad_stop_secs = frame.stop_secs
             async with self._send_lock:
                 if self.comparison:
                     self._compare("reserve_commit", frame.timestamp)
