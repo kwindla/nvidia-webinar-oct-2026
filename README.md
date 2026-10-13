@@ -608,6 +608,15 @@ GB_NEMO_RL_IMAGE=nvcr.io/nvidia/nemo-rl:v0.6.0 GB_NEMO_RL_RUNS_VOLUME=gb-nemo-rl
 #   nemo_rl_app.py::export_a6_checkpoint --run-label atc-dpo-v1 --step N --out-name atc-dpo-v1-sN
 ```
 
+## Skills
+
+`skills/nemotron-nano-task-finetune/` is a coding-agent skill that generalizes the
+method used for the ATC tutor fine-tune (contract and baseline, frozen splits and
+predeclared rules, audited teacher data, SFT, multi-suite judging, quantization,
+authorized release). Start with its `SKILL.md`; the ATC run is its worked example
+in `references/case-study-atc.md`. To use it in Claude Code, copy or symlink the
+directory into `.claude/skills/` (project) or `~/.claude/skills/` (user).
+
 ## Project maintenance
 
 Keep this README current with every change, including dependency, server, and

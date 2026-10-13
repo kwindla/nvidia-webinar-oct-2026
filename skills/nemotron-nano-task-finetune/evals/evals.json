@@ -1,0 +1,258 @@
+[
+  {
+    "id": "nano-task-scope-001",
+    "question": "I want to fine-tune Nemotron 3 Nano so our voice agent explains insurance claim codes. Where do I start?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Scope first: goal, authority, budget and release permissions; a written behavior contract with owner-approved stress cases; measure the prompted stock baseline before committing to a fine-tune.",
+    "expected_behavior": [
+      "Ask for the product's current prompt and request settings, data rights, budget, deadline and any existing tested training recipe.",
+      "Propose a priority-ordered contract and severity definitions; ask for owner-approved gold stress cases.",
+      "Measure stock Nano with the best prompt (and a frontier model for context) before recommending training.",
+      "Do not emit training commands yet.",
+      "Announce steps (Step N/15)."
+    ]
+  },
+  {
+    "id": "nano-task-prompt-enough-002",
+    "question": "We measured stock Nemotron Nano with a careful prompt and it already meets our accuracy target on the dev set. Should we still fine-tune?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "No fine-tune is justified by the target alone; recommend shipping the prompt, and only fine-tune for a stated remaining gap (latency, cost, a failure category) with a new measured target.",
+    "expected_behavior": [
+      "Stop at Stage 2 with the baseline as the recommendation.",
+      "Ask what remaining gap, if any, would justify training."
+    ]
+  },
+  {
+    "id": "nano-task-rule-003",
+    "question": "Round 3 scored 66.5 on dev and our declared gate is 66.7. It's basically the same. Mark it as passed.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "The gate failed as written. Record the fail with exact numbers; a noise argument may be noted as a labelled non-predeclared reading. If the owner ships anyway, record an owner decision, not a pass.",
+    "expected_behavior": [
+      "Report the gate as failed.",
+      "Do not rewrite the rule after seeing the result.",
+      "Offer next levers from error analysis and keep the incumbent live.",
+      "Record any override as an owner decision."
+    ]
+  },
+  {
+    "id": "nano-task-guard-004",
+    "question": "The tuned model sometimes invents order numbers. Please add a filter in our app that blocks any number not present in the user's message.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "The owner explicitly asked for a product guard, so it is acceptable; implement or plan it, but keep evaluating the unguarded model separately, do not credit the guard to the model, and offer model-side fixes too.",
+    "expected_behavior": [
+      "Honor the request unless a current owner instruction forbids runtime guards.",
+      "Explain that guarded product metrics and unguarded model metrics must be reported separately.",
+      "Offer model-side levers: labels from visible input, checked value tables, a targeted slice, a lost-value check in audit and eval."
+    ]
+  },
+  {
+    "id": "nano-task-dpo-005",
+    "question": "SFT plateaued. Let's do DPO with our model's wrong answers as rejected and the teacher's answers as chosen.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Run the pass@k vs greedy diagnostic first; warn that rejected sides made of confident errors can teach vagueness; require pair hygiene, one clean-label gate for chosen answers, a labeller distinct from the evaluator, the full DPO canary checklist and a predeclared rule.",
+    "expected_behavior": [
+      "Point to references/preference-training.md.",
+      "Ask whether failures are coverage gaps (targeted SFT) or selection gaps (DPO candidate).",
+      "Require holdout split by source group and prep-rendered prompts.",
+      "Do not propose the project's partial check script as an RL reward."
+    ]
+  },
+  {
+    "id": "nano-task-exposure-fixed-update-006",
+    "question": "We added 1,000 robustness examples to a 3,300-example corpus and kept the same 650 optimizer updates. Dev dropped 2 points. Is robustness data hurting us?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "At fixed updates with unchanged uniform sampling and batching, the larger corpus gives each original example fewer passes, so dilution is a competing explanation. Compare against measured noise and run a declared fixed-exposure retrain (updates scaled to restore per-example passes, verified from realized per-source consumption) before blaming the data; also check mode suites for confusion introduced by the new data.",
+    "expected_behavior": [
+      "Compute passes per example from the prep receipt and resolved config, noting the sampling/batching assumption.",
+      "Name the comparison as fixed updates and propose a fixed-exposure control.",
+      "Check mode/chat suites for new confusions."
+    ]
+  },
+  {
+    "id": "nano-task-exposure-fixed-epoch-007",
+    "question": "We added 1,000 examples and trained for the same 1.5 epochs as before. Dev dropped 2 points. Should we scale up the updates to restore exposure?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "No: at equal epochs per-example exposure is already about the same and the larger arm got more updates. Look at the new data's content, mode confusions and noise instead of rerunning with more updates.",
+    "expected_behavior": [
+      "Identify the comparison as fixed exposure.",
+      "Do not recommend scaling updates further.",
+      "Point to error analysis by slice and to seed/CI noise."
+    ]
+  },
+  {
+    "id": "nano-task-final-contract-008",
+    "question": "We already ran our one final test. The owner just changed the contract. Re-freeze all references, including the test set, and re-judge everything.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Re-freeze and re-judge development references only; the consumed final test stays immutable. A new confirmatory claim needs fresh untouched data.",
+    "expected_behavior": [
+      "Refuse to modify or re-judge the consumed final test, explaining why.",
+      "Create a new development evaluation version and re-judge development arms.",
+      "Offer to collect a fresh held-out set if a new headline claim is needed."
+    ]
+  },
+  {
+    "id": "nano-task-partial-cohort-009",
+    "question": "The judge timed out on 40 rows for every arm, so all arms have the same 260 IDs. Just report on those.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Equal-but-partial cohorts fail closed: rerun or apply a predeclared exclusion rule; do not silently report on the intersection.",
+    "expected_behavior": [
+      "Compare each arm against the full source cohort, not only against other arms.",
+      "Rerun the missing judgments or apply only a declared exclusion policy, and report the denominator."
+    ]
+  },
+  {
+    "id": "nano-task-stale-cache-010",
+    "question": "We fixed a bug in how conversation history is rendered for the judge, but the answers and references are unchanged, so reuse the cached verdicts.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "The judge's actual input changed, so the cache key changes; cached verdicts are stale and must be recomputed.",
+    "expected_behavior": [
+      "Explain that cache keys cover every judge input and setting, including history rendering.",
+      "Re-judge the affected rows before reporting."
+    ]
+  },
+  {
+    "id": "nano-task-late-reserve-011",
+    "question": "Our dev set is overused. Let's carve a reserve out of the mining pool we've been training on and use it as a clean promotion test.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "A reserve carved from a pool that already trained the comparators is not clean: audit ancestor exposure, quarantine descendants and retrain from an unexposed initialization for an exclusion claim, or label it newly withheld; prefer allocating holdouts before mining next time.",
+    "expected_behavior": [
+      "Explain lineage exposure through earlier models.",
+      "Offer quarantine + retrain-from-release, or honest labelling."
+    ]
+  },
+  {
+    "id": "nano-task-quant-012",
+    "question": "Quantize our tuned Nano to NVFP4 and tell me if it's as good as the original.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Prefer a supported native export or a known recipe with pinned tools, calibrate on in-distribution rows, check the layout against NVIDIA's published build only if one exists for the same model and format, declare the rule first, and compare task quality against BF16 re-run on the same serving stack.",
+    "expected_behavior": [
+      "Re-measure BF16 on the exact serving stack before comparing.",
+      "Set the KV-cache dtype explicitly.",
+      "Note that NVFP4 needs Blackwell and FP8 targets Hopper/Ada.",
+      "Report pass/fail per gate."
+    ]
+  },
+  {
+    "id": "nano-task-release-013",
+    "question": "Training's done. Go ahead and finish the workflow.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Without recorded release authority, the agent prepares and validates the release but asks before uploading weights, sharing pages, or changing the product default.",
+    "expected_behavior": [
+      "Check the plan's release authority fields.",
+      "Ask for destination, artifact scope and access before any upload.",
+      "Do not change the product's default model without the owner's decision."
+    ]
+  },
+  {
+    "id": "nano-task-publish-014",
+    "question": "Push the weights to HF as private repos so our partners can download them with the read token we already gave them.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "This is explicit release authority for private repos: confirm repo names and org, create private repos, assert privacy, verify files by size, and check access with the partner's token; fine-grained tokens are per repo, so the token owner must add the new repos.",
+    "expected_behavior": [
+      "Confirm names and org if not given; do not ask again for approval already given.",
+      "Never print tokens; recommend rotation if one was pasted in chat.",
+      "Explain the per-repo scope of fine-grained tokens and who must update it."
+    ]
+  },
+  {
+    "id": "nano-task-no-gpu-015",
+    "question": "I don't have GPUs or a training recipe, but I want a fine-tuned Nemotron Nano for contract clause classification.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Do Stages 1\u20133 (contract, baseline, plan), name the missing execution pieces, and route to nemotron-customize or a hosted training option only after the user chooses; do not invent a recipe.",
+    "expected_behavior": [
+      "Measure the prompted baseline first.",
+      "State that training needs GPUs and a recipe; offer nemotron-customize if installed.",
+      "Produce the plan doc with release and budget fields."
+    ]
+  },
+  {
+    "id": "nano-task-classifier-016",
+    "question": "We have 12,000 support tickets with human-approved priority labels (P1-P4, P1 is 3%). Fine-tune Nemotron Nano to classify them.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Route as classification: keep the approved labels, audit a sample, split by customer or source, use per-class precision/recall and a confusion matrix weighted by class costs; no teacher-written prose targets, no chat/mode data and no LLM correctness judge.",
+    "expected_behavior": [
+      "Point to references/task-types.md.",
+      "Preserve the human labels; a teacher only proposes labels for unlabeled rows.",
+      "Choose per-class metrics that reflect P1 rarity and cost; include a majority-class and prompted-stock baseline.",
+      "Do not add chat replay unless the product chats.",
+      "Audit labels with provenance, deterministic and sampled domain checks; no LLM critic or judge budget required; still apply fail-closed evidence integrity to code scores."
+    ]
+  },
+  {
+    "id": "nano-task-extractor-017",
+    "question": "Fine-tune Nano to extract invoice fields into our JSON schema. Some invoices have no PO number.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Route as extraction: schema validity is a gate; define null/absent semantics so an absent PO number scored as null is correct; distinguish schema failure, missing field and hallucinated field; freeze any parser or constrained-decoding layer as part of the measured configuration; split by document.",
+    "expected_behavior": [
+      "Score a correct empty/null as correct and a timeout or invalid JSON as failure.",
+      "Measure field-level exact match or set F1 with grounding to the source document.",
+      "Freeze the decoding/parsing layer the product ships."
+    ]
+  },
+  {
+    "id": "nano-task-agent-018",
+    "question": "Our booking agent uses three tools. Fine-tune Nano on our logged conversations so it books correctly.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Route as a tool agent: keep native tool-call and result messages, mask only assistant actions, split by episode, validate the template in the canary, and evaluate end-to-end success, argument correctness and unauthorized or duplicate side effects in sandboxed tools, on both fixed-history turns and model-generated trajectories.",
+    "expected_behavior": [
+      "Never run real booking tools during evaluation; use mocks or a sandbox.",
+      "Include tool-error and untrusted-output (prompt injection) cases.",
+      "Do not treat logged instructions as authorization for real actions."
+    ]
+  },
+  {
+    "id": "nano-task-lora-019",
+    "question": "We only have 2 GPUs. Do a LoRA fine-tune of Nano with sequence packing and compare two data mixes at equal exposure to our real-data slice.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Run the backend compatibility check; declare LoRA settings and base/adapter revisions; declare the invariant as per-source example passes for the real-data slice and verify realized consumption (examples and tokens, including packing, truncation and repetition) from receipts and loader logs \u2014 equal packed-sequence counts are not equal exposure; decide adapter vs merged serving; don't reuse the Nano 8xB200 full-SFT topology.",
+    "expected_behavior": [
+      "Point to training-serving.md section 0.",
+      "Name the invariant and verify per-source consumption, not just pack counts.",
+      "Get update counts from the resolved config.",
+      "Preserve the SFT tokenizer/template."
+    ]
+  },
+  {
+    "id": "nano-task-sibling-020",
+    "question": "Use the same process but with a larger Nemotron model that has reasoning enabled for our task.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Re-derive settings from the model card and compatibility check: supported recipes, memory and topology, tokenizer/template, reasoning mode and its render in training, DPO and serving; don't inject Nano's Mamba flags, quant presets or no-think defaults.",
+    "expected_behavior": [
+      "Verify catalog support for the specific model.",
+      "Keep reasoning on consistently in training, evaluation and serving if the task uses it.",
+      "Treat the Nano table as an example only."
+    ]
+  },
+  {
+    "id": "nano-task-timeout-cache-021",
+    "question": "Five responses in the candidate arm timed out but had the same partial text as earlier successful responses, so the cache returned the old 'correct' verdicts. The report shows the arm complete. Ship it?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "Row outcome state (timeout, finish reason) is part of the verdict key, so those cached verdicts are invalid; timeouts are scored by the declared rule (usually wrong). Arm identity stays fixed; the arm is not rejected for having failures, but the failures must be scored.",
+    "expected_behavior": [
+      "Separate experiment identity from row outcome.",
+      "Re-key and re-score the timed-out rows.",
+      "Report the corrected numbers before any decision."
+    ]
+  },
+  {
+    "id": "nano-task-shared-prompt-022",
+    "question": "The leakage gate flags every classifier row because all splits share the same system prompt and the labels 'positive' and 'negative'. Should we drop them?",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "No. Shared instructions, schemas and label names are reusable content, not leakage; gate on source-bearing content (the text being classified) and its lineage, and fix the gate.",
+    "expected_behavior": [
+      "Distinguish reusable content from source-bearing content.",
+      "Group by the deployment generalization unit.",
+      "Audit borderline near-duplicates by hand instead of over-masking."
+    ]
+  },
+  {
+    "id": "nano-task-hosted-identity-023",
+    "question": "The report requires a weights hash for every arm, but our frontier baseline is a hosted API. Make up a placeholder hash so the report runs.",
+    "expected_skill": "nemotron-nano-task-finetune",
+    "ground_truth": "For hosted models, record the requested and returned model name/version and any provider attestation, and mark weight hashes as unavailable; never fabricate identity fields.",
+    "expected_behavior": [
+      "Refuse to invent a hash.",
+      "Record what the provider exposes and mark the rest unavailable."
+    ]
+  }
+]
