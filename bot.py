@@ -4,7 +4,6 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 import aiohttp
 from dotenv import load_dotenv
@@ -12,7 +11,7 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -33,39 +32,19 @@ from pipecat.workers.runner import WorkerRunner
 from asr_comparison import ComparisonSession
 from flux_tts import DemoFluxTTSService
 from llm_switcher import ConversationLLMSwitcher
+from model_choices import model_catalog, register_model_routes, tuned_api_key
 from streaming_stt import NemoSpeechCppSTTService
-from tutor_prompts import FULL_PROMPT, SHORT13_PROMPT, TUTOR_PROMPT
+from tutor_prompts import SHORT13_PROMPT, TUTOR_PROMPT, VOICE_PROMPT
 
 load_dotenv(Path(__file__).with_name(".env"))
 
-CLOUD_NAME = "GPT-5.6 Terra"
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+GREETING = "Let’s practice aviation radio calls. Say an aviation phrase, and I’ll briefly explain what it means."
 
 
-async def model_names(session: aiohttp.ClientSession) -> dict[str, str]:
-    """The response models this bot can offer right now, mapped to display names."""
-    names = {"cloud": CLOUD_NAME}
-    local_url = os.getenv("LOCAL_LLM_URL", "http://127.0.0.1:8080/v1")
-    try:
-        # Offer the local model only when its server answers, so the UI never
-        # shows a choice that would fail mid-conversation.
-        async with session.get(f"{local_url}/models", timeout=aiohttp.ClientTimeout(total=2)) as response:
-            if response.status == 200:
-                names["local"] = os.getenv("LOCAL_LLM_NAME", "gb-phone")
-    except (aiohttp.ClientError, TimeoutError):
-        logger.warning("Local LLM at {} is not reachable; hiding the Local choice", local_url)
-    if tuned_url := os.getenv("TUNED_LLM_URL"):
-        where = "local" if urlparse(tuned_url).hostname in LOOPBACK_HOSTS else "remote"
-        names["tuned"] = os.getenv("TUNED_LLM_NAME", f"ATC tutor · {where}")
-    return names
-
-
-def default_model(names: dict[str, str], requested: object = None) -> str:
-    """The session's starting model: the client's pick, else DEFAULT_LLM, else cloud."""
-    for choice in (requested, os.getenv("DEFAULT_LLM", "cloud")):
-        if isinstance(choice, str) and choice in names:
-            return choice
-    return "cloud"
+async def queue_greeting(worker):
+    # Pipecat TTS emits spoken text/RTVI and commits it through the assistant aggregator.
+    # Do not also add a context message here: that would duplicate the greeting.
+    await worker.queue_frame(TTSSpeakFrame(GREETING, append_to_context=True))
 
 
 async def bot(runner_args: RunnerArguments):
@@ -99,12 +78,13 @@ async def bot(runner_args: RunnerArguments):
             api_key=api_key,
             settings=OpenAILLMService.Settings(
                 model="gpt-5.6-terra",
-                system_instruction=FULL_PROMPT,
+                system_instruction=VOICE_PROMPT,
                 extra={"reasoning_effort": "medium"},
                 max_completion_tokens=4096,
             ),
         )
-        names = await model_names(session)
+        catalog = await model_catalog(session)
+        names = catalog.names
         llms = {"cloud": cloud_llm}
         if "local" in names:
             llms["local"] = OpenAILLMService(
@@ -114,18 +94,19 @@ async def bot(runner_args: RunnerArguments):
                 api_key="not-required",
                 settings=OpenAILLMService.Settings(
                     model=os.getenv("LOCAL_LLM_MODEL", "gb-phone"),
-                    system_instruction=FULL_PROMPT,
+                    system_instruction=VOICE_PROMPT,
                     max_completion_tokens=250,
                 ),
             )
-        if tuned_url := os.getenv("TUNED_LLM_URL"):
+        if "tuned" in names:
+            tuned_url = os.environ["TUNED_LLM_URL"]
             # The ATC tutor fine-tune (local vLLM or Modal) with the short prompt it was trained on:
             # v1.3 models use the v1.3 prompt, v2/v3 the original one.
             tuned_prompt = SHORT13_PROMPT if os.getenv("TUNED_PROMPT", "v2") == "v13" else TUTOR_PROMPT
             llms["tuned"] = OpenAILLMService(
                 name="tuned-llm",
                 base_url=tuned_url,
-                api_key=os.environ["TUNED_LLM_API_KEY"],
+                api_key=tuned_api_key(tuned_url),
                 settings=OpenAILLMService.Settings(
                     model="gb-phone",
                     system_instruction=tuned_prompt,
@@ -135,7 +116,8 @@ async def bot(runner_args: RunnerArguments):
                 ),
             )
         body = runner_args.body if isinstance(runner_args.body, dict) else {}
-        llm = ConversationLLMSwitcher(llms, selected=default_model(names, body.get("model")))
+        selected, fallback = catalog.initial_selection(body.get("model"))
+        llm = ConversationLLMSwitcher(llms, selected=selected)
         tts = DemoFluxTTSService(
             name="deepgram-flux-tts",
             api_key=deepgram_key,
@@ -146,7 +128,7 @@ async def bot(runner_args: RunnerArguments):
         aggregators = LLMContextAggregatorPair(
             context,
             user_params=LLMUserAggregatorParams(
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)),
                 user_turn_strategies=UserTurnStrategies(
                     stop=[
                         TurnAnalyzerUserTurnStopStrategy(
@@ -179,6 +161,7 @@ async def bot(runner_args: RunnerArguments):
 
         @worker.rtvi.event_handler("on_client_message")
         async def on_client_message(rtvi, message):
+            nonlocal fallback
             if message.type in ("get-comparison", "set-comparison"):
                 if message.type == "set-comparison":
                     try:
@@ -195,18 +178,26 @@ async def bot(runner_args: RunnerArguments):
                 except ValueError as error:
                     await rtvi.send_error_response(message, str(error))
                     return
+                fallback = None
                 logger.info("Selected {} LLM for the next response", llm.selected)
             elif message.type != "get-model":
                 return
             await rtvi.send_server_response(
-                message, {"model": llm.selected, "available": list(llm.models), "names": names}
+                message,
+                {"model": llm.selected, "available": list(llm.models),
+                 "names": names, "fallback": fallback},
             )
+
+        greeted = False
 
         @transport.event_handler("on_client_connected")
         async def on_connected(transport, client):
+            nonlocal greeted
             comparison.set_publish_ready()
-            logger.info("Browser connected; starting greeting")
-            await worker.queue_frame(LLMRunFrame())
+            if not greeted:
+                greeted = True
+                logger.info("Browser connected; speaking fixed greeting")
+                await queue_greeting(worker)
 
         @transport.event_handler("on_client_disconnected")
         async def on_disconnected(transport, client):
@@ -229,15 +220,7 @@ async def bot(runner_args: RunnerArguments):
 if __name__ == "__main__":
     from pipecat.runner.run import app, main
 
-    @app.get("/models")
-    async def models():
-        """Models the next session can start on, so the UI can offer them before connecting."""
-        async with aiohttp.ClientSession() as session:
-            names = await model_names(session)
-        return {
-            "models": [{"id": key, "name": name} for key, name in names.items()],
-            "default": default_model(names),
-        }
+    register_model_routes(app)
 
     from cloudflare_turn import configure_runner_ice
 

@@ -23,7 +23,7 @@ Includes a custom browser voice bot, the built-in dev console, and a synthetic-a
 ```text
 Browser microphone → SmallWebRTC input → audio, in parallel to:
     Nemotron streaming STT (passes audio through without waiting for transcripts)
-    Silero VAD + Smart Turn v3 (inside the user context aggregator; VAD stop also commits STT)
+    Silero VAD (0.4 s stop) + Smart Turn v3 (inside the user context aggregator; VAD stop also commits STT)
   → User context aggregator ends the turn once Smart Turn says done and the final transcript is in
   → LLM switcher (GPT-5.6 Terra / gb-phone / tuned ATC tutor) → Deepgram Flux TTS → SmallWebRTC output → Browser speaker
   → Assistant context aggregator
@@ -203,18 +203,29 @@ segments and typed messages remain in regular type.
 **Disconnect** ends the session; reconnect starts a fresh conversation.
 Use headphones to avoid echo.
 
-**Response model** lists the models the bot offers, from `GET /models` (Cloud always,
-Local when :8080 answers, Tuned when `TUNED_LLM_URL` is set; names come from the bot,
-and `TUNED_LLM_NAME`/`LOCAL_LLM_NAME` override them). Before connecting, a pick sets the
-model the session starts on (sent as the `/start` body); otherwise sessions start on
-`DEFAULT_LLM` (default `cloud`). If the picked model is no longer offered when the session
-starts, the session starts on `DEFAULT_LLM` (or Cloud) instead, and the selector shows the
-actual model once connected. After connecting, switching is confirmed by the server and
-applies to the **next response** while any current reply finishes. All models share
-conversation history, ASR, turn detection, and TTS. Switching to Cloud sends the
-accumulated conversation—including turns handled locally—to OpenAI. Requests stay
-server-side; model servers are not exposed through ngrok. Mid-session, an unavailable model
-produces an error; there is no automatic fallback to the other provider.
+**Response model** lists the models offered by `GET /models`. Cloud is always listed;
+Local and Tuned are offered only when their configured OpenAI-compatible `/models`
+endpoint responds within two seconds and lists the requested model ID. Probes run
+concurrently. Remote Tuned also requires `TUNED_LLM_API_KEY`; loopback Tuned uses a
+nonempty SDK dummy key if the key is blank or absent. Warm remote endpoints before
+connecting. `TUNED_LLM_NAME` / `LOCAL_LLM_NAME` override display names.
+
+Before connecting, a pick is sent in `/start.body.model`. Without a pick the bot uses
+`DEFAULT_LLM` (default `cloud`), then Cloud if that default is unavailable. If an
+**explicit pick is unavailable at session start**, the same default chain applies,
+but a visible notice names the requested model, the model actually selected and the
+reason. The selector synchronizes this notice when the bot becomes ready; Cloud
+fallback means user turns can go to OpenAI. A five-second catalog timeout and
+**Retry models** control allow recovery without reloading. Catalog refreshes do not
+silently replace an explicit pick. Mid-session switches are confirmed by the server
+and apply to the next response; they clear any startup fallback notice. Conversation
+history is shared, so switching to Cloud sends prior locally handled turns to OpenAI.
+There is no automatic mid-session fallback on inference errors. Model servers stay
+server-side and are not proxied through the UI.
+
+Every model starts with the same fixed TTS greeting, with no LLM completion request.
+Pipecat publishes the spoken text to the client and records it through the assistant
+context aggregator. Normal interruptions retain Pipecat's spoken-text behavior.
 
 `llm_switcher.py` wraps Pipecat's `LLMSwitcher`, choosing the service at each
 context frame. It includes a Pipecat 1.12 workaround that deduplicates flush
@@ -309,7 +320,12 @@ Open the printed HTTPS URL at its root (no `/client/` suffix). The built-in cons
 can be tunneled the same way (`ngrok http http://127.0.0.1:7860`, then open
 `/client/`). Both use the same bot. Ngrok carries UI/signaling, while WebRTC media uses
 ICE directly, with Cloudflare TURN as a relay fallback when configured (see below).
-Vite allows `*.ngrok.app`; add an explicit hostname in `client/vite.config.ts`
+To keep the URL private to your tailnet (e.g. on a livestream), use Tailscale Serve
+instead: `sudo tailscale serve --bg --https=8443 http://127.0.0.1:5173`, then open
+`https://<machine>.<tailnet>.ts.net:8443/` from a tailnet device. Use `serve`, not
+`funnel`, and a port with no Funnel on it (`tailscale funnel status`); remove it with
+`sudo tailscale serve --https=8443 off`.
+Vite allows `*.ngrok.app` and `*.ts.net`; add an explicit hostname in `client/vite.config.ts`
 if using a different tunnel domain. Preview is for this local demo, not a
 production hosting configuration.
 
@@ -391,8 +407,8 @@ the final-tested v2-328 at `https://daily-gb-rl--atc-tutor-serving-phone.modal.r
 (`TUNED_PROMPT=v2`). DPO checkpoints are not used in the demo.
 
 **Before a session:** restart the bot within 24 hours (Cloudflare TURN credentials
-expire). Pick **Tuned** before connecting, or switch after the Cloud greeting; the tutor
-greets oddly with an empty conversation, so starting on Cloud reads better.
+expire). Wait for the tuned endpoint to be ready, then pick **Tuned** before connecting.
+The greeting is fixed and identical for every model.
 
 ### Fully local tuned model (RTX 5090 / Blackwell)
 
@@ -402,7 +418,7 @@ private repo) and serve it with vLLM 0.31.0 in Docker on :8083:
 
 ```bash
 read -rsp 'Hugging Face token: ' HF_TOKEN; echo; export HF_TOKEN
-uvx --from huggingface_hub hf download daily-co/atc-tutor-nano-r5-nvfp4 \
+uvx --python 3.12 --from huggingface_hub hf download daily-co/atc-tutor-nano-r5-nvfp4 \
   --local-dir ~/local-models/atc-tutor-r5-nvfp4
 unset HF_TOKEN
 ./scripts/serve_asr.sh            # terminal 1, unless already running
@@ -411,7 +427,9 @@ unset HF_TOKEN
 
 Point the bot's **Tuned** arm at it in `.env` (Pipecat's runner reloads `.env` with
 override, so shell variables do not work): `TUNED_LLM_URL=http://127.0.0.1:8083/v1`,
-`TUNED_PROMPT=v13`; `TUNED_LLM_API_KEY` may be any value. Then start the bot:
+`TUNED_PROMPT=v13`; `TUNED_LLM_API_KEY=not-required` is suitable for this local
+server (blank or absent also uses the dummy key on loopback). A remote authenticated
+endpoint requires its actual nonempty serving key. Then start the bot:
 
 ```bash
 uv run bot.py -t webrtc --host 127.0.0.1 --port 7871
@@ -421,16 +439,16 @@ Open `http://localhost:7871/client/`, or the custom UI through ngrok (see Custom
 `BOT_URL`/`CLIENT_PORT`). ASR, the tutor LLM, VAD and turn detection run
 locally; Deepgram TTS, the Jev judge, the **Cloud** arm and TURN still use the network.
 
-### Use the tuned model in the voice demo
+### Use the final-tested v2 model (remote alternative)
 
-The selected checkpoint (`atc-tutor-v2-sft/hf-iter328`) is served by the Modal app
+The final-tested checkpoint (`atc-tutor-v2-sft/hf-iter328`) is served by the Modal app
 `atc-tutor-serving`. To use it, set in `.env`:
 - `TUNED_LLM_URL=https://daily-gb-rl--atc-tutor-serving-phone.modal.run/v1`
 - `TUNED_LLM_API_KEY`: the `gb-serving-key` value.
 - `TUNED_PROMPT`: `v2` for v2/v3 models (default), `v13` for v1.3 models.
 
-The UI then shows a **Tuned** model button. A cold start takes about 400 s, so warm the
-endpoint before a session:
+A cold start takes about 400 s, so warm the endpoint before a session. Then retry
+the model catalog (or reconnect/reload) to make **Tuned** available:
 
 ```bash
 uv run python scripts/atc_tutor/probe_endpoint.py https://daily-gb-rl--atc-tutor-serving-phone.modal.run ../zorana-research-internal/.env
@@ -558,17 +576,23 @@ NVFP4 needs Blackwell GPUs (B200, RTX PRO 6000, RTX 50-series); FP8 runs on Hopp
 Ada (H100, H200, L40S). Both use the PhoneLLM Mini recipe: NVIDIA's Mamba-MoE ModelOpt
 preset and BF16 layer policy, 1,000 calibration prefills from the training rows, and
 normalization to NVIDIA's published Nano checkpoint layout. From the PhoneLLM checkout
-(branch `atc-tutor-dpo`):
+(branch `atc-tutor-dpo`; path contract checked at commit `438e892f`):
 
 ```bash
-llm-rl/.venv/bin/modal run --detach -e gb-rl llm-rl/llm_rl/modal/atc_nvfp4_app.py \
-  --run atc-tutor-v13r5-nvfp4-a --source atc-tutor-v13r5-s2-sft/hf-iter831 \
-  --calibration atc-tutor-v13r4-s2-nemo/training.jsonl          # add --fmt fp8 for FP8
-# serve on vLLM 0.31 (BF16 KV cache); GB_PHONE_GPU=H100 for FP8 on Hopper
+# Choose a distinct immutable run name per format. Run in foreground: serve only after success.
+ATC_QUANT_FORMAT=nvfp4  # or fp8
+ATC_QUANT_RUN="atc-tutor-v13r5-${ATC_QUANT_FORMAT}-$(date +%Y%m%d-%H%M%S)"
+llm-rl/.venv/bin/modal run -e gb-rl llm-rl/llm_rl/modal/atc_nvfp4_app.py \
+  --run "$ATC_QUANT_RUN" --fmt "$ATC_QUANT_FORMAT" \
+  --source atc-tutor-v13r5-s2-sft/hf-iter831 \
+  --calibration atc-tutor-v13r4-s2-nemo/training.jsonl
+# Check the successful result's serving_copy before deploying; no extra format prefix is added.
+# This sets the single `phone` endpoint; GB_PHONE_LADDER would instead configure ladder0, etc.
+# Use GB_PHONE_GPU=H100 only for FP8, not NVFP4.
 GB_PHONE_APP_NAME=atc-tutor-bench13q-serving GB_PHONE_FAMILY=nano \
   GB_PHONE_IMAGE=vllm/vllm-openai:v0.31.0 GB_PHONE_GPU=RTX-PRO-6000 \
   GB_PHONE_EXTRA_VLLM_ARGS='["--kv-cache-dtype","bfloat16"]' \
-  GB_PHONE_LADDER=/data/checkpoints/atc-tutor-v13r5-s2-sft/nvfp4-atc-tutor-v13r5-nvfp4-a \
+  GB_PHONE_MODEL_PATH="/data/checkpoints/atc-tutor-v13r5-s2-sft/$ATC_QUANT_RUN" \
   llm-rl/.venv/bin/modal deploy -e gb-rl llm-rl/llm_rl/modal/phone_serving_app.py
 ```
 
@@ -752,8 +776,11 @@ and generated artifacts out of Git; `.env.example` contains empty placeholders.
 Verified with browser relay-only connections over both UDP and TLS/443; both
 received bot audio. Refresh the UI before testing from a different network.
 
-The voice agent system instruction is defined in `bot.py` and shared by both LLMs.
-The greeting is used only before the first actual user message.
+Live cloud/local instructions are `VOICE_PROMPT` in `tutor_prompts.py`; Tuned uses its
+configured short training prompt. `DEMO_PROMPT` has no greeting instructions. The
+historical `FULL_PROMPT` and `FULL13_PROMPT` retain their original bytes for training
+exports and evaluation; live prompt changes do not rewrite benchmark evidence.
+The connection greeting is fixed text sent directly through TTS; it is never generated by the LLM.
 The user speaks an aviation phrase; the agent gives only one short explanation
 sentence, without repeating or quoting the phrase. It opens with “Let’s practice aviation radio calls. Say an
 aviation phrase, and I’ll briefly explain what it means.”
@@ -761,7 +788,7 @@ The cloud model allows
 4,096 completion tokens, including reasoning, so medium reasoning has room to
 produce a spoken answer.
 
-The system instruction includes ten fictional few-shot examples: seven controller
+The live cloud/local system instruction includes ten fictional few-shot examples: seven controller
 instructions covering flight levels, altitudes, headings, transponder codes, radio
 frequencies, holding short, and landing with wind information, plus three pilot
 readbacks covering climb, holding short, and landing clearance. Each response
@@ -776,3 +803,17 @@ The voice-agent panel has a labeled **Mute microphone / Unmute microphone**
 button below Connect. It controls the Pipecat client microphone and is disabled
 until connected with microphone access; bot audio and text chat remain available
 while muted. The adjacent device menu selects the microphone.
+
+### Model-picker and greeting regression checks
+
+Run without restarting any server or calling paid providers:
+
+```bash
+uv run --python 3.12 python -m unittest discover -s tests
+npm --prefix client test
+npm --prefix client run typecheck
+npm --prefix client run lint
+```
+
+The route tests mock WebRTC negotiation and the bot; greeting tests verify the
+Pipecat TTS/context/RTVI path with synthesized events, not a live Deepgram request.

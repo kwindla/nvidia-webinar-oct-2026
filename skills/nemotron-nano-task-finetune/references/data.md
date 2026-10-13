@@ -16,7 +16,8 @@ Concrete numbers from one project are in [`case-study-atc.md`](case-study-atc.md
 - **Prefer real inputs where they exist.** Clean synthetic templates teach the textbook case; real
   inputs carry the length, disfluency and mess the product sees. Measure performance by input length or
   difficulty to see the gap.
-- **Keep a clean core** for canonical cases: a code-built slice whose writer and critic both see a
+- **Keep a clean core** for canonical cases. Existing-label tasks can use trusted, reviewed examples.
+  For synthetic canonical targets, use a code-built slice whose writer and critic both see a
   **facts block** (the exact values and their correct renderings). Cleanliness filters on real data can
   silently remove whole categories; check coverage after filtering.
 - **Variants** (value swaps, paraphrases) of real parents when the teacher judges them safe; they

@@ -19,14 +19,14 @@ export default defineConfig({
     host: "127.0.0.1",
     port,
     strictPort: true,
-    allowedHosts: [".ngrok.app"],
+    allowedHosts: [".ngrok.app", ".ts.net"],
     proxy,
   },
   preview: {
     host: "127.0.0.1",
     port,
     strictPort: true,
-    allowedHosts: [".ngrok.app"],
+    allowedHosts: [".ngrok.app", ".ts.net"],
     proxy,
   },
 })
