@@ -255,15 +255,15 @@ ngrok, volume changes, profile switching, stopping, reload without autoplay, and
 missing-file error handling. Typechecking, ESLint, and the client tests pass.
 
 The **model latency** panel uses Pipecat RTVI `onMetrics` events and Zustand.
-Each model/metric keeps its last 30 reports in a compact sparkline, with a shared
-zero-based millisecond scale. Cloud/local histories remain separate during model
+Each service shows one metric: its last 5 values as numbers (newest in green, older in
+blue) above a sparkline of its last 30 reports, with a shared zero-based millisecond scale. Cloud/local histories remain separate during model
 switches; a new connection clears them. Empty services show no fabricated zeroes.
 
 | UI metric | Reported measurement |
 |---|---|
-| Nemotron TTFS | Pipecat STT TTFB: speech end → finalized text, including VAD stop delay |
-| LLM TTFB / TTFT | First service output / first answer token (`ttfat`, including any reasoning) |
-| Deepgram Flux TTFB / TTFA | First audio bytes / first audible sample, including leading silence |
+| Nemotron TTFS | VAD stop (STT commit) → finalized text; excludes the VAD silence wait |
+| LLM TTFT | First answer token (`ttfat`, including any reasoning); LLM TTFB is not shown |
+| Deepgram Flux TTFB | First audio bytes; TTFA is not shown |
 
 These are service reports, not complete-turn or browser playback latency.
 Pipecat can emit TTFB when a request is interrupted; those reports remain visible.
